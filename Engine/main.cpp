@@ -9,8 +9,11 @@
 #include "dot_net_runtime.h" // Correct include path
 #include "host_utils.h"      // Correct include path
 
-// Define the function pointer type for the managed delegate
-using PingDelegate = void(*)();
+// Define the function pointer types for the managed delegates
+using InitDelegate = bool(*)();       // Corresponds to ScriptAPI::EngineInterface::Init
+using SayHelloDelegate = void(*)();   // Corresponds to ScriptAPI::EngineInterface::CallSayHello
+using PingDelegate = void(*)();       // Corresponds to ScriptAPI::EngineInterface::Ping (optional)
+
 
 int main()
 {
@@ -40,12 +43,11 @@ int main()
 
     // --- Build Trusted Platform Assemblies (TPA) List ---
     std::cout << "Building TPA list..." << std::endl;
-    // IMPORTANT: Add ScriptAPI.dll to the TPA list!
     std::string tpaList = Core::HostUtils::build_tpa_list(runtimePath); // Runtime DLLs
-    tpaList += Core::HostUtils::build_tpa_list(appBasePath);            // Add DLLs in executable directory (Core.dll, Engine.exe, ScriptAPI.dll)
+    tpaList += Core::HostUtils::build_tpa_list(appBasePath);            // Core.dll, ScriptAPI.dll, ManagedScripts.dll, etc.
     if (tpaList.empty())
     {
-       std::cerr << "Warning: TPA list is empty. CoreCLR might fail to load assemblies." << std::endl;
+       std::cerr << "Warning: TPA list is empty." << std::endl;
     } else {
          std::cout << "TPA list built." << std::endl;
     }
@@ -65,37 +67,53 @@ int main()
 
     std::cout << "CoreCLR Initialized successfully!" << std::endl;
 
-    // --- Get Delegate for ScriptAPI::Ping ---
-    std::cout << "Getting delegate for ScriptAPI.EngineInterface.Ping..." << std::endl;
-    PingDelegate pingFunc = nullptr;
-    bool delegateCreated = runtime.create_delegate(
-        "ScriptAPI",                 // Assembly name (without .dll)
-        "ScriptAPI.EngineInterface", // Fully qualified type name
-        "Ping",                      // Static method name
-        &pingFunc                    // Address of the function pointer
-    );
+    // --- Get Delegates for ScriptAPI ---
+    std::cout << "Getting delegates from ScriptAPI..." << std::endl;
 
-    if (!delegateCreated || pingFunc == nullptr)
+    InitDelegate scriptApiInit = nullptr;
+    SayHelloDelegate scriptApiSayHello = nullptr;
+    // PingDelegate scriptApiPing = nullptr; // Optional
+
+    bool initDelegateOk = runtime.create_delegate("ScriptAPI", "ScriptAPI.EngineInterface", "Init", &scriptApiInit);
+    bool sayHelloDelegateOk = runtime.create_delegate("ScriptAPI", "ScriptAPI.EngineInterface", "CallSayHello", &scriptApiSayHello);
+    // bool pingDelegateOk = runtime.create_delegate("ScriptAPI", "ScriptAPI.EngineInterface", "Ping", &scriptApiPing); // Optional
+
+    if (!initDelegateOk || !sayHelloDelegateOk /* || !pingDelegateOk */ )
     {
-        std::cerr << "Failed to create delegate for ScriptAPI.EngineInterface.Ping." << std::endl;
-        // Decide if this is fatal. For now, continue and let shutdown handle cleanup.
+         std::cerr << "Failed to get one or more required delegates from ScriptAPI." << std::endl;
+         runtime.shutdown(); // Shutdown runtime before exiting
+         return EXIT_FAILURE;
     }
-    else
+     std::cout << "Delegates obtained successfully." << std::endl;
+
+
+    // --- Initialize ScriptAPI Environment ---
+    std::cout << "Calling ScriptAPI Init..." << std::endl;
+    bool scriptApiInitialized = false;
+    try
     {
-        std::cout << "Delegate created successfully. Calling Ping..." << std::endl;
-        // --- Call the Managed Method ---
-        try
-        {
-             pingFunc();
-        }
-        catch (const std::exception& e) // Catch potential exceptions crossing the boundary
-        {
-            std::cerr << "!!! Native Exception caught calling Ping delegate: " << e.what() << std::endl;
-        }
-        catch (...) // Catch any other non-standard exceptions
-        {
-             std::cerr << "!!! Unknown exception caught calling Ping delegate." << std::endl;
-        }
+        scriptApiInitialized = scriptApiInit();
+    }
+    catch (...) { // Catch potential exceptions crossing the boundary
+        std::cerr << "!!! Unknown exception caught calling ScriptAPI Init delegate." << std::endl;
+    }
+
+    if (!scriptApiInitialized) {
+        std::cerr << "ScriptAPI initialization failed." << std::endl;
+        runtime.shutdown();
+        return EXIT_FAILURE;
+    }
+    std::cout << "ScriptAPI Init completed." << std::endl;
+
+
+    // --- Call the C# Method via ScriptAPI ---
+    std::cout << "Calling ScriptAPI CallSayHello..." << std::endl;
+    try
+    {
+        scriptApiSayHello();
+    }
+    catch (...) {
+        std::cerr << "!!! Unknown exception caught calling ScriptAPI CallSayHello delegate." << std::endl;
     }
 
 

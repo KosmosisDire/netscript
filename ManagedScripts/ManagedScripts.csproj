@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Output type is Library (DLL) -->
+    <OutputType>Library</OutputType>
+    <!-- Target .NET 9 -->
+    <TargetFramework>net9.0</TargetFramework>
+    <!-- Enable modern C# features -->
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Specify platform, important for consistency -->
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <!-- Disable self-contained builds -->
+    <SelfContained>false</SelfContained>
+    <!-- Add this property -->
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <!-- Configuration-specific output paths to match CMake -->
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'">
+    <!-- Output to the same place as Core.dll and ScriptAPI.dll -->
+    <OutputPath>..\build\bin\Debug\</OutputPath>
+    <!-- Generate full debug information -->
+    <DebugType>full</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <OutputPath>..\build\bin\Release\</OutputPath>
+     <!-- Generate PDBs for Release too, for easier debugging if needed -->
+    <DebugType>pdbonly</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+   <PropertyGroup Condition="'$(Configuration)'=='RelWithDebInfo'">
+    <OutputPath>..\build\bin\RelWithDebInfo\</OutputPath>
+    <DebugType>pdbonly</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+   <PropertyGroup Condition="'$(Configuration)'=='MinSizeRel'">
+    <OutputPath>..\build\bin\MinSizeRel\</OutputPath>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Reference the ScriptAPI.dll -->
+    <Reference Include="ScriptAPI">
+      <HintPath>..\build\bin\$(Configuration)\ScriptAPI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

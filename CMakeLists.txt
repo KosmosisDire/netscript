@@ -14,7 +14,6 @@ set(CMAKE_PDB_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin) # Keep PDBs with binarie
 # Set configuration types if not set by generator (e.g., for VS Code Makefiles)
 if(NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_CONFIGURATION_TYPES Debug Release RelWithDebInfo MinSizeRel CACHE STRING "Configurations" FORCE)
-  # Set default build type if none was specified
   if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "Choose the type of build" FORCE)
   endif()
@@ -22,34 +21,49 @@ endif()
 
 # Add flags for MSVC builds
 if(MSVC)
-  # Add /FS flag globally to handle parallel PDB writes during compilation
   add_compile_options(/FS)
-
-  # Explicitly set Debug Information Format options for Debug config
-  # This ensures /Zi for compilation and /DEBUG for linking
-  # which helps with PDB generation and finding by the linker/debugger.
-  # Check if variables exist before appending, avoiding potential issues
   if(NOT CMAKE_CXX_FLAGS_DEBUG)
-    set(CMAKE_CXX_FLAGS_DEBUG "/Zi /Od /RTC1") # Base Debug flags
+    set(CMAKE_CXX_FLAGS_DEBUG "/Zi /Od /RTC1")
   else()
-     string(APPEND CMAKE_CXX_FLAGS_DEBUG " /Zi") # Ensure /Zi is present
+     string(APPEND CMAKE_CXX_FLAGS_DEBUG " /Zi")
   endif()
-
   if(NOT CMAKE_SHARED_LINKER_FLAGS_DEBUG)
-      set(CMAKE_SHARED_LINKER_FLAGS_DEBUG "/DEBUG /INCREMENTAL") # Base shared linker debug flags
+      set(CMAKE_SHARED_LINKER_FLAGS_DEBUG "/DEBUG /INCREMENTAL")
   else()
-      string(APPEND CMAKE_SHARED_LINKER_FLAGS_DEBUG " /DEBUG") # Ensure /DEBUG is present
+      string(APPEND CMAKE_SHARED_LINKER_FLAGS_DEBUG " /DEBUG")
   endif()
-
   if(NOT CMAKE_EXE_LINKER_FLAGS_DEBUG)
-       set(CMAKE_EXE_LINKER_FLAGS_DEBUG "/DEBUG /INCREMENTAL") # Base exe linker debug flags
+       set(CMAKE_EXE_LINKER_FLAGS_DEBUG "/DEBUG /INCREMENTAL")
   else()
-      string(APPEND CMAKE_EXE_LINKER_FLAGS_DEBUG " /DEBUG") # Ensure /DEBUG is present
+      string(APPEND CMAKE_EXE_LINKER_FLAGS_DEBUG " /DEBUG")
   endif()
-
 endif()
 
-# Add subdirectories
+# Add Core subdirectory first, so the target is defined
 add_subdirectory(Core)
-add_subdirectory(ScriptAPI)
+
+# --- Custom Target to Build ScriptAPI using MSBuild ---
+if(CMAKE_GENERATOR MATCHES "Visual Studio")
+    find_program(MSBUILD_EXECUTABLE msbuild)
+    if(NOT MSBUILD_EXECUTABLE)
+        message(FATAL_ERROR "MSBuild not found. Cannot build ScriptAPI.vcxproj.")
+    endif()
+
+    set(SCRIPTAPI_PROJECT_FILE ${CMAKE_SOURCE_DIR}/ScriptAPI/ScriptAPI.vcxproj)
+
+    add_custom_target(BuildScriptAPI ALL
+        COMMAND ${MSBUILD_EXECUTABLE} ${SCRIPTAPI_PROJECT_FILE} /p:Configuration=$<CONFIG> /p:Platform=x64
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/ScriptAPI
+        COMMENT "Building ScriptAPI.vcxproj for $<CONFIG>"
+        VERBATIM
+        # Add dependency on the Core target
+        DEPENDS Core
+    )
+    message(STATUS "Added custom target BuildScriptAPI using MSBuild: ${MSBUILD_EXECUTABLE}")
+else()
+    message(WARNING "Visual Studio generator not used. ScriptAPI.vcxproj must be built manually.")
+endif()
+
+# Add Engine subdirectory
+# add_subdirectory(ScriptAPI) # Stays REMOVED
 add_subdirectory(Engine)
