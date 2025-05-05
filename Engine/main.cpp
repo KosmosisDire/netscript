@@ -3,8 +3,8 @@
 #include <vector>
 #include <cstdlib> // EXIT_SUCCESS, EXIT_FAILURE
 #include <thread>  // For std::this_thread::sleep_for
-#include <chrono>  // For std::chrono::seconds
-#include <Windows.h> // For GetAsyncKeyState, VK_ESCAPE
+#include <chrono>  // For std::chrono::seconds, milliseconds
+#include <Windows.h> // For GetAsyncKeyState, VK_ESCAPE, VK_SPACE
 
 // Include Core library headers
 #include "dot_net_runtime.h" // Correct include path
@@ -13,64 +13,74 @@
 // Define the function pointer types for the managed delegates
 using InitDelegate = bool(*)();
 using ShutdownDelegate = void(*)();
-using AddScriptDelegate = bool(*)(int, const char*); // Pass script name as const char* from C++
+using ReloadDelegate = bool(*)(); // Delegate for Reload
+using AddScriptDelegate = bool(*)(int, const char*);
 using ExecuteStartDelegate = void(*)(int);
 using ExecuteUpdateDelegate = void(*)();
 
-// Helper to convert std::string to const char* suitable for delegate call
-// NOTE: Be careful with lifetime if the string is temporary.
-// For simple literals or strings with lifetime managed elsewhere, this is okay.
-const char* StringToChar(const std::string& str) {
-    return str.c_str();
-}
+// Simple state tracking for hot reload
+struct ScriptInstanceInfo {
+    int entityId;
+    std::string scriptName;
+    // Add other config/state if needed
+};
 
+// Helper function to add a script and execute its start method
+bool AddAndStartScript(
+    AddScriptDelegate addFunc,
+    ExecuteStartDelegate startFunc,
+    const ScriptInstanceInfo& info)
+{
+    if (!addFunc || !startFunc) return false;
+
+    std::cout << "Attempting to add script '" << info.scriptName << "' to entity " << info.entityId << "..." << std::endl;
+    bool added = false;
+    try { added = addFunc(info.entityId, info.scriptName.c_str()); }
+    catch (...) { std::cerr << "!!! Exception caught calling AddScript delegate." << std::endl; return false; }
+
+    if (added) {
+        std::cout << "Script added. Executing Start() for entity " << info.entityId << "..." << std::endl;
+        try { startFunc(info.entityId); }
+        catch (...) { std::cerr << "!!! Exception caught calling ExecuteStart delegate." << std::endl; /* Continue? */ }
+        return true;
+    } else {
+        std::cerr << "Failed to add script '" << info.scriptName << "'." << std::endl;
+        return false;
+    }
+}
 
 int main()
 {
     std::cout << "Engine starting..." << std::endl;
 
-    // --- Find .NET Runtime ---
+    // --- Initialization Steps (Same as before) ---
     std::cout << "Searching for .NET 9+ runtime..." << std::endl;
     const int requiredMajorVersion = 9;
     std::string runtimePath = Core::HostUtils::find_latest_dot_net_runtime(requiredMajorVersion);
-    if (runtimePath.empty()) {
-        std::cerr << "Error: Could not find a compatible .NET " << requiredMajorVersion << "+ runtime." << std::endl;
-        return EXIT_FAILURE;
-    }
+    if (runtimePath.empty()) { std::cerr << "Error: .NET Runtime not found." << std::endl; return EXIT_FAILURE; }
     std::cout << "Found .NET Runtime at: " << runtimePath << std::endl;
 
-    // --- Get Application Base Directory ---
     std::string appBasePath = Core::HostUtils::get_current_executable_directory();
-    if (appBasePath.empty()) {
-        std::cerr << "Error: Could not determine the application base directory." << std::endl;
-        return EXIT_FAILURE;
-    }
+    if (appBasePath.empty()) { std::cerr << "Error: Cannot get app base path." << std::endl; return EXIT_FAILURE; }
     std::cout << "Application Base Path: " << appBasePath << std::endl;
 
-    // --- Build Trusted Platform Assemblies (TPA) List ---
     std::cout << "Building TPA list..." << std::endl;
     std::string tpaList = Core::HostUtils::build_tpa_list(runtimePath);
     tpaList += Core::HostUtils::build_tpa_list(appBasePath);
-    if (tpaList.empty()) {
-       std::cerr << "Warning: TPA list is empty." << std::endl;
-    } else {
-         std::cout << "TPA list built." << std::endl;
-    }
+    if (tpaList.empty()) { std::cerr << "Warning: TPA list is empty." << std::endl; }
+    else { std::cout << "TPA list built." << std::endl; }
 
-    // --- Initialize CoreCLR ---
     std::cout << "Initializing CoreCLR..." << std::endl;
     Core::DotNetRuntime runtime;
     bool initialized = runtime.initialize(runtimePath, appBasePath, tpaList);
-    if (!initialized) {
-        std::cerr << "Failed to initialize the .NET runtime." << std::endl;
-        return EXIT_FAILURE;
-    }
+    if (!initialized) { std::cerr << "Failed to initialize .NET runtime." << std::endl; return EXIT_FAILURE; }
     std::cout << "CoreCLR Initialized successfully!" << std::endl;
 
     // --- Get Delegates for ScriptAPI ---
     std::cout << "Getting delegates from ScriptAPI..." << std::endl;
     InitDelegate scriptApiInit = nullptr;
     ShutdownDelegate scriptApiShutdown = nullptr;
+    ReloadDelegate scriptApiReload = nullptr; // Get Reload delegate
     AddScriptDelegate scriptApiAddScript = nullptr;
     ExecuteStartDelegate scriptApiExecuteStart = nullptr;
     ExecuteUpdateDelegate scriptApiExecuteUpdate = nullptr;
@@ -78,14 +88,14 @@ int main()
     bool delegatesOk = true;
     delegatesOk &= runtime.create_delegate("ScriptAPI", "ScriptAPI.EngineInterface", "Init", &scriptApiInit);
     delegatesOk &= runtime.create_delegate("ScriptAPI", "ScriptAPI.EngineInterface", "Shutdown", &scriptApiShutdown);
+    delegatesOk &= runtime.create_delegate("ScriptAPI", "ScriptAPI.EngineInterface", "Reload", &scriptApiReload); // Add Reload
     delegatesOk &= runtime.create_delegate("ScriptAPI", "ScriptAPI.EngineInterface", "AddScript", &scriptApiAddScript);
     delegatesOk &= runtime.create_delegate("ScriptAPI", "ScriptAPI.EngineInterface", "ExecuteStartForEntity", &scriptApiExecuteStart);
     delegatesOk &= runtime.create_delegate("ScriptAPI", "ScriptAPI.EngineInterface", "ExecuteUpdate", &scriptApiExecuteUpdate);
 
-    if (!delegatesOk || !scriptApiInit || !scriptApiShutdown || !scriptApiAddScript || !scriptApiExecuteStart || !scriptApiExecuteUpdate) {
+    if (!delegatesOk || !scriptApiInit || !scriptApiShutdown || !scriptApiReload || !scriptApiAddScript || !scriptApiExecuteStart || !scriptApiExecuteUpdate) {
          std::cerr << "Failed to get one or more required delegates from ScriptAPI." << std::endl;
-         runtime.shutdown();
-         return EXIT_FAILURE;
+         runtime.shutdown(); return EXIT_FAILURE;
     }
      std::cout << "Delegates obtained successfully." << std::endl;
 
@@ -94,58 +104,89 @@ int main()
     bool scriptApiInitialized = false;
     try { scriptApiInitialized = scriptApiInit(); }
     catch (...) { std::cerr << "!!! Exception caught calling ScriptAPI Init delegate." << std::endl; }
-
     if (!scriptApiInitialized) {
         std::cerr << "ScriptAPI initialization failed." << std::endl;
-        runtime.shutdown();
-        return EXIT_FAILURE;
+        runtime.shutdown(); return EXIT_FAILURE;
     }
     std::cout << "ScriptAPI Init completed." << std::endl;
 
-    // --- Add a Script Instance ---
-    int playerEntityId = 0; // Example entity ID
-    std::string scriptName = "MyFirstScript"; // Name must match class name found by DiscoverScriptTypes
-    std::cout << "Adding script '" << scriptName << "' to entity " << playerEntityId << "..." << std::endl;
-    bool scriptAdded = false;
-    try { scriptAdded = scriptApiAddScript(playerEntityId, scriptName.c_str()); }
-    catch (...) { std::cerr << "!!! Exception caught calling ScriptAPI AddScript delegate." << std::endl; }
+    // --- Keep track of scripts to re-add after reload ---
+    std::vector<ScriptInstanceInfo> activeScriptInstances;
+    activeScriptInstances.push_back({0, "MyFirstScript"}); // Add our initial script info
 
-    if (!scriptAdded) {
-         std::cerr << "Failed to add script " << scriptName << std::endl;
-         // Decide if this is fatal, for now continue but Update won't run
-    } else {
-        std::cout << "Script added." << std::endl;
-
-        // --- Execute Start for the entity ---
-        std::cout << "Executing Start() for entity " << playerEntityId << "..." << std::endl;
-         try { scriptApiExecuteStart(playerEntityId); }
-         catch (...) { std::cerr << "!!! Exception caught calling ScriptAPI ExecuteStart delegate." << std::endl; }
+    // --- Initial Script Loading ---
+    for(const auto& scriptInfo : activeScriptInstances) {
+         AddAndStartScript(scriptApiAddScript, scriptApiExecuteStart, scriptInfo);
     }
 
-    // --- Main Engine Loop Simulation ---
-    std::cout << "Starting main loop (Press ESC to exit)..." << std::endl;
+    // --- Main Engine Loop ---
+    std::cout << "\nStarting main loop (Press SPACE to Reload, ESC to Exit)..." << std::endl;
     bool running = true;
     int frameCount = 0;
+    bool spacePressedLastFrame = false; // To detect key press edge
+
     while(running)
     {
-        // Check for exit condition (e.g., pressing ESC key)
-        // Use GetAsyncKeyState for non-blocking check
-        if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) {
+        // --- Input Handling ---
+        bool escapePressed = GetAsyncKeyState(VK_ESCAPE) & 0x8000;
+        bool spacePressed = GetAsyncKeyState(VK_SPACE) & 0x8000;
+
+        if (escapePressed) {
             running = false;
             std::cout << "\nESC pressed, exiting loop." << std::endl;
-            continue; // Skip update on exit frame
+            continue;
         }
+
+        // Check for Space press *edge* (pressed now, but not last frame)
+        if (spacePressed && !spacePressedLastFrame) {
+            std::cout << "\n--- HOT RELOAD REQUESTED ---" << std::endl;
+
+            // 1. (Manual Step) Rebuild ManagedScripts.dll
+            // In a real engine, you might trigger this automatically or watch for changes.
+            // For now, you need to manually run `dotnet build` in ManagedScripts
+            // *before* pressing Space.
+            std::cout << ">>> Please ensure ManagedScripts.dll has been rebuilt <<<" << std::endl;
+            std::cout << ">>> Press SPACE again to confirm reload... <<<" << std::endl;
+
+            // Simple confirmation mechanism - requires pressing space twice
+            // Wait for space release then press again
+            while (GetAsyncKeyState(VK_SPACE) & 0x8000) { Sleep(10); } // Wait for release
+            while (!(GetAsyncKeyState(VK_SPACE) & 0x8000)) { // Wait for press again
+                if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) { // Allow exit during wait
+                     running = false; break;
+                }
+                Sleep(10);
+            }
+             while (GetAsyncKeyState(VK_SPACE) & 0x8000) { Sleep(10); } // Wait for release again
+            if (!running) continue; // Check if Escape was pressed during wait
+
+            std::cout << "--- Reloading .NET Scripts ---" << std::endl;
+            bool reloadOk = false;
+            try { reloadOk = scriptApiReload(); }
+            catch(...) { std::cerr << "!!! Exception caught calling ScriptAPI Reload delegate." << std::endl; }
+
+            if (reloadOk) {
+                std::cout << "--- Re-adding script instances ---" << std::endl;
+                // Re-add all previously active scripts
+                for(const auto& scriptInfo : activeScriptInstances) {
+                    AddAndStartScript(scriptApiAddScript, scriptApiExecuteStart, scriptInfo);
+                }
+                std::cout << "--- Hot Reload Complete ---" << std::endl;
+            } else {
+                 std::cerr << "--- Hot Reload FAILED ---" << std::endl;
+                 // Maybe stop the engine or prevent further updates?
+                 // For now, just log the error. Update loop will continue using old state if reload failed badly.
+            }
+        }
+        spacePressedLastFrame = spacePressed; // Update state for next frame
 
         // --- Execute Script Updates ---
         try { scriptApiExecuteUpdate(); }
         catch (...) { std::cerr << "!!! Exception caught calling ScriptAPI ExecuteUpdate delegate." << std::endl; }
 
         // Simulate frame delay
-        std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60 FPS
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
         frameCount++;
-
-        // Optional: Limit loop duration for testing
-        // if (frameCount > 300) running = false; // Exit after ~5 seconds
     }
     std::cout << "Exited main loop after " << frameCount << " frames." << std::endl;
 
@@ -157,11 +198,8 @@ int main()
     // --- Shutdown CoreCLR ---
     std::cout << "Shutting down CoreCLR..." << std::endl;
     bool shutdownSuccess = runtime.shutdown();
-    if (!shutdownSuccess) {
-        std::cerr << "CoreCLR shutdown reported an error." << std::endl;
-    } else {
-        std::cout << "CoreCLR shutdown successful." << std::endl;
-    }
+    if (!shutdownSuccess) { std::cerr << "CoreCLR shutdown reported an error." << std::endl; }
+    else { std::cout << "CoreCLR shutdown successful." << std::endl; }
 
     std::cout << "Engine exiting." << std::endl;
     return EXIT_SUCCESS;

@@ -22,10 +22,11 @@ namespace ManagedScripts
             // Print less frequently to avoid flooding console
             if (updateCount % 60 == 0) // Print roughly once per second if running at 60fps
             {
-                 Console.WriteLine($"---> MyFirstScript Update()! Entity ID: {GetEntityId()}, Count: {updateCount}");
+                //  Console.WriteLine($"---> MyFirstScript Update()! Entity ID: {GetEntityId()}, Count: {updateCount}");
+                Console.WriteLine("HELLOOOOO");
             }
-        }
-
+        } 
+ 
         // Constructor (optional)
         public MyFirstScript()
         {

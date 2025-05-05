@@ -11,12 +11,76 @@
 
 // Additional using directives needed
 using namespace System::Linq; // For Enumerable class
+using namespace System::Threading; // For Thread::Sleep
 
 #include <iostream> // For std::cerr if needed
 
 namespace ScriptAPI
 {
     // Static members initialized in header
+
+    // Helper function to clear script-related data structures
+    void EngineInterface::ClearScriptData()
+    {
+        Console::WriteLine("[ScriptAPI] Clearing script data...");
+        isInitialized = false; // Mark as uninitialized during cleanup/reload
+
+        if (activeScripts != nullptr) activeScripts->Clear();
+        if (availableScriptTypes != nullptr) availableScriptTypes->Clear();
+        activeScripts = nullptr;
+        availableScriptTypes = nullptr;
+        scriptAssembly = nullptr; // Release reference to the assembly
+    }
+
+    // Helper function to load assembly and discover scripts
+    // Used by Init and Reload
+    bool EngineInterface::LoadAndDiscoverScripts()
+    {
+        try
+        {
+            // Ensure a valid context exists or create a new one
+            if (scriptLoadContext == nullptr) {
+                scriptLoadContext = gcnew AssemblyLoadContext("ManagedScriptsContext", true);
+                Console::WriteLine("[ScriptAPI] Created new AssemblyLoadContext.");
+            }
+
+            String^ assemblyPath = "ManagedScripts.dll";
+
+            if (!File::Exists(assemblyPath))
+            {
+                Console::Error->WriteLine(String::Format("[ScriptAPI] Error: ManagedScripts.dll not found: {0}", assemblyPath));
+                // Don't nullify scriptLoadContext here, it might be needed for unload later
+                return false;
+            }
+
+            // Load into the current context
+            FileStream^ fs = File::Open(assemblyPath, FileMode::Open, FileAccess::Read, FileShare::Read);
+            scriptAssembly = scriptLoadContext->LoadFromStream(fs);
+            fs->Close();
+
+            if (scriptAssembly == nullptr)
+            {
+                Console::Error->WriteLine(String::Format("[ScriptAPI] Error: Failed to load assembly: {0}", assemblyPath));
+                return false; // Context remains for potential unload
+            }
+
+            Console::WriteLine(String::Format("[ScriptAPI] Successfully loaded assembly: {0}", scriptAssembly->FullName));
+
+            DiscoverScriptTypes(); // Discover types from the newly loaded assembly
+            activeScripts = gcnew Dictionary<int, List<Script^>^>(); // Reset active scripts
+
+            return true;
+        }
+        catch (Exception^ e)
+        {
+            Console::Error->WriteLine(String::Format("[ScriptAPI] Exception during LoadAndDiscoverScripts: {0}", e->Message));
+            Console::Error->WriteLine(e->StackTrace);
+            scriptAssembly = nullptr; // Ensure assembly ref is null on error
+            // Don't nullify context, allow unload attempt
+            return false;
+        }
+    }
+
 
     bool EngineInterface::Init()
     {
@@ -27,70 +91,93 @@ namespace ScriptAPI
         }
         Console::WriteLine("[ScriptAPI] Initializing...");
 
-        try
-        {
-            scriptLoadContext = gcnew AssemblyLoadContext("ManagedScriptsContext", true);
-            String^ assemblyPath = "ManagedScripts.dll";
-
-            if (!File::Exists(assemblyPath))
-            {
-                Console::Error->WriteLine(String::Format("[ScriptAPI] Error: ManagedScripts.dll not found: {0}", assemblyPath));
-                scriptLoadContext = nullptr; return false;
-            }
-
-            FileStream^ fs = File::Open(assemblyPath, FileMode::Open, FileAccess::Read, FileShare::Read);
-            scriptAssembly = scriptLoadContext->LoadFromStream(fs);
-            fs->Close();
-
-            if (scriptAssembly == nullptr)
-            {
-                Console::Error->WriteLine(String::Format("[ScriptAPI] Error: Failed to load assembly: {0}", assemblyPath));
-                scriptLoadContext = nullptr; return false;
-            }
-
-            Console::WriteLine(String::Format("[ScriptAPI] Successfully loaded assembly: {0}", scriptAssembly->FullName));
-
-            DiscoverScriptTypes();
-            // Use gcnew with explicit template args for Dictionary
-            activeScripts = gcnew Dictionary<int, List<Script^>^>();
-            isInitialized = true;
+        // Perform initial load and discovery
+        if (LoadAndDiscoverScripts()) {
+            isInitialized = true; // Mark as initialized only on success
             return true;
         }
-        catch (Exception^ e)
-        {
-            Console::Error->WriteLine(String::Format("[ScriptAPI] Exception during initialization: {0}", e->Message));
-            Console::Error->WriteLine(e->StackTrace);
-            scriptAssembly = nullptr; scriptLoadContext = nullptr; activeScripts = nullptr;
-            isInitialized = false; return false;
+        else {
+            // Cleanup potentially partially created context if loading failed
+            Shutdown(); // Call full shutdown to ensure cleanup
+            return false;
         }
     }
+
+    // --- Implementation of Reload ---
+    bool EngineInterface::Reload()
+    {
+        Console::WriteLine("[ScriptAPI] Reload requested...");
+
+        // 1. Clear existing script instances and type lookups
+        ClearScriptData();
+
+        // 2. Unload the existing AssemblyLoadContext
+        if (scriptLoadContext != nullptr)
+        {
+            try
+            {
+                Console::WriteLine("[ScriptAPI] Unloading previous AssemblyLoadContext...");
+                scriptLoadContext->Unload();
+                Console::WriteLine("[ScriptAPI] Unload initiated.");
+
+                // Give the unload and GC some time. This is not foolproof but helps.
+                // WaitForPendingFinalizers can block indefinitely if something holds on.
+                // A loop with GC.Collect() and Sleep might be safer in complex scenarios.
+                scriptLoadContext = nullptr; // Release our reference
+                GC::Collect();
+                GC::WaitForPendingFinalizers(); // Wait for finalizers to run
+                GC::Collect(); // Collect again after finalizers
+                Console::WriteLine("[ScriptAPI] GC finalized after unload attempt.");
+
+            }
+            catch (Exception^ e)
+            {
+                // Log error but continue - context might be partially unloaded or stuck
+                Console::Error->WriteLine(String::Format("[ScriptAPI] Exception during AssemblyLoadContext.Unload() or GC: {0}", e->Message));
+                scriptLoadContext = nullptr; // Ensure reference is cleared anyway
+            }
+        }
+        else {
+            Console::WriteLine("[ScriptAPI] No previous AssemblyLoadContext to unload.");
+        }
+
+
+        // 3. Re-load the assembly and re-discover scripts
+        Console::WriteLine("[ScriptAPI] Reloading scripts...");
+        if (LoadAndDiscoverScripts()) {
+            isInitialized = true; // Mark as initialized again
+            Console::WriteLine("[ScriptAPI] Reload complete.");
+            return true;
+        }
+        else {
+            Console::Error->WriteLine("[ScriptAPI] Failed to reload scripts.");
+            // Cleanup after failed reload attempt
+            Shutdown(); // Call full shutdown
+            return false;
+        }
+    }
+
 
     // --- Implementation of the static predicate ---
     bool EngineInterface::IsConcreteScript(Type^ type)
     {
-        // Check if it's a non-abstract subclass of ScriptAPI::Script
         return type != nullptr && type->IsSubclassOf(Script::typeid) && !type->IsAbstract;
     }
 
     void EngineInterface::DiscoverScriptTypes()
     {
-        // Use gcnew with explicit template args for Dictionary
         availableScriptTypes = gcnew Dictionary<String^, Type^>();
         if (scriptAssembly == nullptr) return;
 
         Console::WriteLine("[ScriptAPI] Discovering script types...");
         try
         {
-            // Explicitly cast the array returned by GetExportedTypes() to IEnumerable<Type^>
             IEnumerable<Type^>^ typesInAssembly = safe_cast<IEnumerable<Type^>^>(scriptAssembly->GetExportedTypes());
-
-            // Use the static predicate function with Enumerable::Where on the IEnumerable
             IEnumerable<Type^>^ discoveredTypes = Enumerable::Where(
-                typesInAssembly, // Pass the correctly typed IEnumerable
-                gcnew Func<Type^, bool>(&EngineInterface::IsConcreteScript) // Pass delegate to static function
+                typesInAssembly,
+                gcnew Func<Type^, bool>(&EngineInterface::IsConcreteScript)
             );
 
-            // Check if discoveredTypes is null before iterating
             if (discoveredTypes == nullptr) {
                 Console::Error->WriteLine("[ScriptAPI] Error: Enumerable::Where returned null during script discovery.");
                 return;
@@ -121,14 +208,11 @@ namespace ScriptAPI
     List<Script^>^ EngineInterface::GetOrCreateEntityScriptList(int entityId)
     {
         List<Script^>^ entityScripts;
-        // Ensure activeScripts is not null before accessing
         if (activeScripts == nullptr) {
             activeScripts = gcnew Dictionary<int, List<Script^>^>();
         }
-
         if (!activeScripts->TryGetValue(entityId, entityScripts))
         {
-            // Use gcnew with explicit template args for List
             entityScripts = gcnew List<Script^>();
             activeScripts->Add(entityId, entityScripts);
         }
@@ -137,43 +221,37 @@ namespace ScriptAPI
 
     bool EngineInterface::AddScript(int entityId, String^ scriptName)
     {
-        if (!isInitialized || availableScriptTypes == nullptr || scriptAssembly == nullptr)
-        {
-            Console::Error->WriteLine("[ScriptAPI] Error: AddScript called before successful initialization.");
+        if (!isInitialized || availableScriptTypes == nullptr || scriptAssembly == nullptr) {
+            Console::Error->WriteLine("[ScriptAPI] Error: AddScript called before successful initialization/reload.");
             return false;
         }
 
         scriptName = scriptName->Trim();
         Type^ scriptTypeToCreate = nullptr;
-        if (!availableScriptTypes->TryGetValue(scriptName, scriptTypeToCreate))
-        {
+        if (!availableScriptTypes->TryGetValue(scriptName, scriptTypeToCreate)) {
             Console::Error->WriteLine(String::Format("[ScriptAPI] Error: Script type '{0}' not found or not discovered.", scriptName));
             return false;
         }
 
         Console::WriteLine(String::Format("[ScriptAPI] Adding script '{0}' to Entity {1}", scriptTypeToCreate->FullName, entityId));
 
-        try
-        {
+        try {
             Object^ instance = Activator::CreateInstance(scriptTypeToCreate);
             Script^ newScript = safe_cast<Script^>(instance);
 
-            if (newScript != nullptr)
-            {
+            if (newScript != nullptr) {
                 newScript->SetEntityId(entityId);
                 List<Script^>^ entityScripts = GetOrCreateEntityScriptList(entityId);
                 entityScripts->Add(newScript);
                 Console::WriteLine(String::Format("[ScriptAPI] Script '{0}' added successfully to Entity {1}.", scriptTypeToCreate->FullName, entityId));
                 return true;
             }
-            else
-            {
+            else {
                 Console::Error->WriteLine(String::Format("[ScriptAPI] Error: Failed to cast created instance to Script^ for type '{0}'.", scriptTypeToCreate->FullName));
                 return false;
             }
         }
-        catch (Exception^ e)
-        {
+        catch (Exception^ e) {
             Console::Error->WriteLine(String::Format("[ScriptAPI] Exception during AddScript ('{0}'): {1}", scriptName, e->Message));
             Console::Error->WriteLine(e->StackTrace);
             return false;
@@ -183,21 +261,13 @@ namespace ScriptAPI
     void EngineInterface::ExecuteStartForEntity(int entityId)
     {
         if (!isInitialized || activeScripts == nullptr) return;
-
         List<Script^>^ entityScripts;
-        if (activeScripts->TryGetValue(entityId, entityScripts))
-        {
-            // Use gcnew with explicit template args for List
+        if (activeScripts->TryGetValue(entityId, entityScripts)) {
             auto scriptsToStart = gcnew List<Script^>(entityScripts);
-            for each (Script ^ script in scriptsToStart)
-            {
+            for each (Script ^ script in scriptsToStart) {
                 if (script == nullptr) continue;
-                try
-                {
-                    script->Start();
-                }
-                catch (Exception^ e)
-                {
+                try { script->Start(); }
+                catch (Exception^ e) {
                     String^ scriptTypeName = (script->GetType() != nullptr) ? script->GetType()->Name : "Unknown Script";
                     Console::Error->WriteLine(String::Format("[ScriptAPI] Exception during {0}->Start() for Entity {1}: {2}", scriptTypeName, entityId, e->Message));
                     Console::Error->WriteLine(e->StackTrace);
@@ -209,26 +279,15 @@ namespace ScriptAPI
     void EngineInterface::ExecuteUpdate()
     {
         if (!isInitialized || activeScripts == nullptr) return;
-
-        // Use gcnew with explicit template args for List and KeyValuePair
         auto entitiesWithScripts = gcnew List<KeyValuePair<int, List<Script^>^>>(activeScripts);
-
-        for each (KeyValuePair<int, List<Script^>^> pair in entitiesWithScripts)
-        {
+        for each (KeyValuePair<int, List<Script^>^> pair in entitiesWithScripts) {
             int entityId = pair.Key;
             List<Script^>^ entityScripts = pair.Value;
-            // Use gcnew with explicit template args for List
             auto scriptsToUpdate = gcnew List<Script^>(entityScripts);
-
-            for each (Script ^ script in scriptsToUpdate)
-            {
+            for each (Script ^ script in scriptsToUpdate) {
                 if (script == nullptr) continue;
-                try
-                {
-                    script->Update();
-                }
-                catch (Exception^ e)
-                {
+                try { script->Update(); }
+                catch (Exception^ e) {
                     String^ scriptTypeName = (script->GetType() != nullptr) ? script->GetType()->Name : "Unknown Script";
                     Console::Error->WriteLine(String::Format("[ScriptAPI] Exception during {0}->Update() for Entity {1}: {2}", scriptTypeName, entityId, e->Message));
                     Console::Error->WriteLine(e->StackTrace);
@@ -240,27 +299,24 @@ namespace ScriptAPI
     void EngineInterface::Shutdown()
     {
         Console::WriteLine("[ScriptAPI] Shutting down...");
-        isInitialized = false;
+        // Clear script data first
+        ClearScriptData();
 
-        if (activeScripts != nullptr) activeScripts->Clear();
-        if (availableScriptTypes != nullptr) availableScriptTypes->Clear();
-        activeScripts = nullptr;
-        availableScriptTypes = nullptr;
-        scriptAssembly = nullptr;
-
+        // Then unload context if it exists (might be null if Init/Reload failed)
         if (scriptLoadContext != nullptr)
         {
-            try
-            {
-                Console::WriteLine("[ScriptAPI] Unloading AssemblyLoadContext...");
+            try {
+                Console::WriteLine("[ScriptAPI] Unloading AssemblyLoadContext on shutdown...");
                 scriptLoadContext->Unload();
-                Console::WriteLine("[ScriptAPI] AssemblyLoadContext unloaded.");
+                scriptLoadContext = nullptr; // Clear ref immediately after calling Unload
+                // Optional: Add GC calls here too if needed, similar to Reload
+               // GC::Collect(); GC::WaitForPendingFinalizers(); GC::Collect();
+                Console::WriteLine("[ScriptAPI] AssemblyLoadContext unload initiated on shutdown.");
             }
-            catch (Exception^ e)
-            {
-                Console::Error->WriteLine(String::Format("[ScriptAPI] Exception during AssemblyLoadContext.Unload(): {0}", e->Message));
+            catch (Exception^ e) {
+                Console::Error->WriteLine(String::Format("[ScriptAPI] Exception during AssemblyLoadContext.Unload() on shutdown: {0}", e->Message));
+                scriptLoadContext = nullptr; // Ensure ref is cleared
             }
-            scriptLoadContext = nullptr;
         }
         Console::WriteLine("[ScriptAPI] Shutdown complete.");
     }

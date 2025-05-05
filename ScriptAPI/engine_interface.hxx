@@ -18,15 +18,22 @@ namespace ScriptAPI
         static bool AddScript(int entityId, String^ scriptName);
         static void ExecuteStartForEntity(int entityId);
         static void ExecuteUpdate();
+        // --- New Method ---
+        // Reloads the script assembly and re-initializes script types.
+        static bool Reload();
+        // --- End New Method ---
         static void Shutdown();
 
     private:
         static void DiscoverScriptTypes();
         static List<Script^>^ GetOrCreateEntityScriptList(int entityId);
-
-        // --- Predicate function for DiscoverScriptTypes ---
-        // Moved from lambda to static function
         static bool IsConcreteScript(Type^ type);
+
+        // --- Helper for cleanup ---
+        static void ClearScriptData();
+        // --- Helper for assembly loading/discovery ---
+        static bool LoadAndDiscoverScripts();
+
 
         // --- Static Members ---
         static AssemblyLoadContext^ scriptLoadContext = nullptr;
