@@ -24,6 +24,9 @@
     <ClInclude Include="engine_interface.hxx">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="script.hxx">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="AssemblyInfo.cpp">
@@ -33,6 +36,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="engine_interface.cxx">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="script.cxx">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

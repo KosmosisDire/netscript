@@ -1,27 +1,38 @@
-using System; // Required for Console
+using System;
+// Reference the ScriptAPI namespace to access the base class
+using ScriptAPI;
 
-// Optional namespace for organization
 namespace ManagedScripts
 {
-    public class MyFirstScript
+    // Inherit from the abstract Script class defined in ScriptAPI
+    public class MyFirstScript : Script
     {
-        // Static method to be called from C++/CLI via Reflection
-        public static void SayHello(string name)
+        private int updateCount = 0;
+
+        // Optional: Override the Start method
+        public override void Start()
         {
-            Console.WriteLine($"---> Hello {name} from MyFirstScript.SayHello (C#)!");
+            Console.WriteLine($"---> MyFirstScript Start() called for Entity ID: {GetEntityId()}");
         }
 
-        // Instance method placeholder for later script execution
-        public void Update()
+        // Override the Update method for per-frame logic
+        public override void Update()
         {
-            Console.WriteLine($"---> MyFirstScript Update! (Instance Method)");
-            // In later phases, this would access engine components
+            updateCount++;
+            // Print less frequently to avoid flooding console
+            if (updateCount % 60 == 0) // Print roughly once per second if running at 60fps
+            {
+                 Console.WriteLine($"---> MyFirstScript Update()! Entity ID: {GetEntityId()}, Count: {updateCount}");
+            }
         }
 
         // Constructor (optional)
         public MyFirstScript()
         {
-             Console.WriteLine($"---> MyFirstScript instance created.");
+             Console.WriteLine($"---> MyFirstScript instance created (Constructor). Entity ID not set yet.");
         }
+
+        // Remove the old static method
+        // public static void SayHello(string name) { ... }
     }
 }
